@@ -12,9 +12,12 @@ pipeline {
         stage('Validate Files') {
             steps {
                 sh '''
+                    set -eu
+
                     test -f app.py
                     test -f requirements.txt
                     test -f Dockerfile
+
                     echo "All required files exist"
                 '''
             }
@@ -22,7 +25,13 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
-                sh 'docker build -t mini-devops-app:1.0 .'
+                sh '''
+                    set -eu
+
+                    docker build -t mini-devops-app:1.0 .
+
+                    echo "Docker image built successfully"
+                '''
             }
         }
 
@@ -30,17 +39,28 @@ pipeline {
             steps {
                 sh '''
                     set -eu
+
+                    # Remove any leftover test container
                     docker rm -f mini-devops-ci-test 2>/dev/null || true
+
+                    # Start the application container
+                    docker run -d \
+                        --name mini-devops-ci-test \
+                        mini-devops-app:1.0
+
+                    # Always clean up the temporary container
                     trap 'docker rm -f mini-devops-ci-test >/dev/null 2>&1 || true' EXIT
 
-                    docker run -d --name mini-devops-ci-test \
-                        -p 127.0.0.1:5001:5000 mini-devops-app:1.0
-
+                    # Retry the health check while Flask starts
                     for i in $(seq 1 20); do
-                        if curl -fsS http://localhost:5001/health; then
-                            echo "Health check passed"
+                        if docker exec mini-devops-ci-test python -c \
+                            "import urllib.request; r=urllib.request.urlopen('http://localhost:5000/health', timeout=2); print(r.read().decode()); assert r.status == 200" \
+                            2>/dev/null; then
+
+                            echo "Smoke test passed"
                             exit 0
                         fi
+
                         sleep 2
                     done
 
@@ -56,8 +76,13 @@ pipeline {
         success {
             echo 'SUCCESS: Docker build and smoke test passed!'
         }
+
         failure {
             echo 'FAILURE: Check the Jenkins console output.'
+        }
+
+        always {
+            echo 'Pipeline execution completed.'
         }
     }
 }
